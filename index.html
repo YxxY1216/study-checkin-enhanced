@@ -282,6 +282,7 @@
 
         /* Calendar */
         .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+        .cal-nav-left { display: flex; align-items: center; gap: 6px; }
         .cal-nav-btn {
             background: var(--gray-100); border: none; border-radius: 6px;
             width: 24px; height: 24px; cursor: pointer; font-size: 12px;
@@ -290,6 +291,13 @@
         }
         .cal-nav-btn:hover { background: var(--gray-200); }
         .cal-month-label { font-size: 14px; font-weight: 600; color: var(--gray-700); }
+        .cal-week-btn {
+            background: var(--primary); color: white; border: none; border-radius: 6px;
+            padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
+            transition: background 0.15s;
+        }
+        .cal-week-btn:hover { background: #4338CA; }
+        .cal-week-btn.active { background: #7C3AED; box-shadow: 0 0 0 2px rgba(124,58,237,0.3); }
         .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
         .cal-day-header {
             text-align: center; font-size: 10px; font-weight: 600;
@@ -471,6 +479,7 @@
                 <button class="cal-nav-btn" onclick="changeMonth(-1)">◀</button>
                 <span class="cal-month-label" id="calMonthLabel"></span>
                 <button class="cal-nav-btn" onclick="changeMonth(1)">▶</button>
+                <button class="cal-week-btn" id="weekBtn" onclick="toggleWeekView()">看上周</button>
             </div>
             <div class="cal-grid" id="calGrid"></div>
             <div class="legend" id="calLegend"></div>
@@ -566,6 +575,7 @@ const SUBJECTS = [
 
 let calYear, calMonth, selectedDate;
 let trendRange = 7;
+let weekViewMode = false; // 是否处于"看上周"模式
 
 // Exam date: 考研 usually Dec 20-22
 const EXAM_DATE = new Date('2026-12-20');
@@ -987,48 +997,80 @@ function changeMonth(delta) {
 
 function renderCal() {
     const label = document.getElementById('calMonthLabel');
-    label.textContent = `${calYear}年${calMonth+1}月`;
-
     const history = loadHistory();
     const historyMap = {};
     history.forEach(h => { historyMap[h.date] = h; });
 
-    const firstDay = new Date(calYear, calMonth, 1).getDay();
-    const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
-    const todayStr = todayKey();
-
-    const grid = document.getElementById('calGrid');
     const weekdays = ['日','一','二','三','四','五','六'];
-    let html = weekdays.map(d=>`<div class="cal-day-header">${d}</div>`).join('');
+    const grid = document.getElementById('calGrid');
 
-    const prevDays = new Date(calYear, calMonth, 0).getDate();
-    for(let i=firstDay-1;i>=0;i--){
-        const day = prevDays-i;
-        const m = calMonth===0?12:calMonth;
-        const y = calMonth===0?calYear-1:calYear;
-        const ds = `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-        const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
-        html += `<div class="cal-day other-month${hasData?' has-data':''}${ds===selectedDate?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
+    if(weekViewMode){
+        // Week view: show 7 days starting from the previous Sunday
+        const today = new Date();
+        const todayStr = todayKey();
+        const dayOfWeek = today.getDay(); // 0=Sun
+        const lastSunday = new Date(today);
+        lastSunday.setDate(today.getDate() - dayOfWeek);
+
+        const weekDates = [];
+        for(let i=0;i<7;i++){
+            const d = new Date(lastSunday);
+            d.setDate(lastSunday.getDate() + i);
+            weekDates.push(d.toISOString().slice(0,10));
+        }
+
+        // Highlight the selected date
+        const selIdx = weekDates.indexOf(selectedDate);
+
+        let html = weekdays.map(d=>`<div class="cal-day-header">${d}</div>`).join('');
+        weekDates.forEach((ds,i) => {
+            const dateObj = new Date(ds+'T00:00:00');
+            const day = dateObj.getDate();
+            const isToday = ds===todayStr;
+            const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
+            const isSelected = i===selIdx;
+            html += `<div class="cal-day${isToday?' today':''}${hasData&&!isToday?' has-data':''}${isSelected&&!isToday?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
+        });
+        label.textContent = '上周学习记录';
+        grid.innerHTML = html;
+    } else {
+        // Month view (original)
+        label.textContent = `${calYear}年${calMonth+1}月`;
+        const firstDay = new Date(calYear, calMonth, 1).getDay();
+        const daysInMonth = new Date(calYear, calMonth+1, 0).getDate();
+        const todayStr = todayKey();
+
+        let html = weekdays.map(d=>`<div class="cal-day-header">${d}</div>`).join('');
+
+        const prevDays = new Date(calYear, calMonth, 0).getDate();
+        for(let i=firstDay-1;i>=0;i--){
+            const day = prevDays-i;
+            const m = calMonth===0?12:calMonth;
+            const y = calMonth===0?calYear-1:calYear;
+            const ds = `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+            const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
+            html += `<div class="cal-day other-month${hasData?' has-data':''}${ds===selectedDate?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
+        }
+
+        for(let day=1;day<=daysInMonth;day++){
+            const ds = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+            const isToday = ds===todayStr;
+            const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
+            html += `<div class="cal-day${isToday?' today':''}${hasData&&!isToday?' has-data':''}${ds===selectedDate&&!isToday?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
+        }
+
+        const totalCells = firstDay + daysInMonth;
+        const pad = (7 - totalCells%7) % 7;
+        for(let day=1;day<=pad;day++){
+            const m = calMonth===11?1:calMonth+2;
+            const y = calMonth===11?calYear+1:calYear;
+            const ds = `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+            const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
+            html += `<div class="cal-day other-month${hasData?' has-data':''}${ds===selectedDate?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
+        }
+
+        grid.innerHTML = html;
     }
-
-    for(let day=1;day<=daysInMonth;day++){
-        const ds = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-        const isToday = ds===todayStr;
-        const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
-        html += `<div class="cal-day${isToday?' today':''}${hasData&&!isToday?' has-data':''}${ds===selectedDate&&!isToday?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
-    }
-
-    const totalCells = firstDay + daysInMonth;
-    const pad = (7 - totalCells%7) % 7;
-    for(let day=1;day<=pad;day++){
-        const m = calMonth===11?1:calMonth+2;
-        const y = calMonth===11?calYear+1:calYear;
-        const ds = `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-        const hasData = historyMap[ds]&&Object.values(historyMap[ds].data).some(d=>d.completed);
-        html += `<div class="cal-day other-month${hasData?' has-data':''}${ds===selectedDate?' selected':''}" onclick="selectDate('${ds}')">${day}</div>`;
-    }
-
-    grid.innerHTML = html;
     renderLegend();
 }
 
@@ -1036,6 +1078,35 @@ function selectDate(ds) {
     selectedDate = ds;
     renderCal();
     renderChart(ds);
+}
+
+function toggleWeekView() {
+    weekViewMode = !weekViewMode;
+    const btn = document.getElementById('weekBtn');
+    if(weekViewMode){
+        btn.textContent = '看本月';
+        btn.classList.add('active');
+        // Set calYear/calMonth to this week's month
+        const now = new Date();
+        calYear = now.getFullYear();
+        calMonth = now.getMonth();
+        // Select the start of last week (last Monday)
+        const today = new Date();
+        const dayOfWeek = today.getDay() || 7; // 1=Mon..7=Sun
+        const lastMonday = new Date(today);
+        lastMonday.setDate(today.getDate() - dayOfWeek - 6);
+        calYear = lastMonday.getFullYear();
+        calMonth = lastMonday.getMonth();
+        selectedDate = todayKey();
+    } else {
+        btn.textContent = '看上周';
+        btn.classList.remove('active');
+        const now = new Date();
+        calYear = now.getFullYear();
+        calMonth = now.getMonth();
+        selectedDate = todayKey();
+    }
+    renderCal();
 }
 
 function renderLegend() {
