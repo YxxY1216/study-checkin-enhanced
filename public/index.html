@@ -581,41 +581,86 @@ let weekViewMode = false; // 是否处于"看上周"模式
 const EXAM_DATE = new Date('2026-12-20');
 
 /* ═══════════════════════════════════════════
-   STORAGE
+   STORAGE - API Backend Layer
 ═══════════════════════════════════════════ */
+const API_BASE = window.location.origin;
+
+// Local cache for synchronous access
+let _todayCache = {};
+let _historyCache = [];
+
 function todayKey() { return new Date().toISOString().slice(0,10); }
 
-function loadToday() {
-    const raw = localStorage.getItem('checkin_' + todayKey());
-    if (raw) return JSON.parse(raw);
-    const data = {};
-    SUBJECTS.forEach(s => s.tasks.forEach((_,i) => {
-        data[`${s.id}_${i}`] = { completed:false, time:'0:00' };
-    }));
-    return data;
+async function loadToday() {
+    try {
+        const res = await fetch(`${API_BASE}/api/today`);
+        if (!res.ok) throw new Error('API error');
+        const json = await res.json();
+        _todayCache = json.data || {};
+        SUBJECTS.forEach(s => s.tasks.forEach((_, i) => {
+            const key = `${s.id}_${i}`;
+            if (!_todayCache[key]) _todayCache[key] = { completed: false, time: '0:00' };
+        }));
+        return _todayCache;
+    } catch (e) {
+        console.error('loadToday error:', e);
+        const data = {};
+        SUBJECTS.forEach(s => s.tasks.forEach((_, i) => {
+            data[`${s.id}_${i}`] = { completed: false, time: '0:00' };
+        }));
+        return data;
+    }
 }
-function saveToday(d) { localStorage.setItem('checkin_'+todayKey(), JSON.stringify(d)); }
 
-function loadHistory() {
-    const r = localStorage.getItem('checkin_history');
-    return r ? JSON.parse(r) : [];
+async function saveToday(d) {
+    _todayCache = d;
+    try {
+        const res = await fetch(`${API_BASE}/api/today`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: d })
+        });
+        return res.ok;
+    } catch (e) {
+        console.error('saveToday error:', e);
+        return false;
+    }
 }
-function saveHistory(h) { localStorage.setItem('checkin_history', JSON.stringify(h)); }
 
-function loadStreak() {
-    const r = localStorage.getItem('checkin_streak');
-    return r ? JSON.parse(r) : { current:0, best:0, lastDate:null };
+async function loadHistory() {
+    try {
+        const res = await fetch(`${API_BASE}/api/history`);
+        if (!res.ok) throw new Error('API error');
+        _historyCache = await res.json();
+        return _historyCache;
+    } catch (e) {
+        console.error('loadHistory error:', e);
+        return [];
+    }
 }
-function saveStreak(s) { localStorage.setItem('checkin_streak', JSON.stringify(s)); }
 
-function archiveDay(key, data) {
-    let h = loadHistory();
-    const idx = h.findIndex(x => x.date === key);
-    if (idx >= 0) { h[idx] = { ...h[idx], data, updatedAt: new Date().toISOString() }; }
-    else { h.unshift({ date:key, data, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() }); }
-    while (h.length > 120) h.pop();
-    saveHistory(h);
+async function loadStreak() {
+    try {
+        const res = await fetch(`${API_BASE}/api/streak`);
+        if (!res.ok) throw new Error('API error');
+        const json = await res.json();
+        return { current: json.streak, best: json.streak, lastDate: todayKey() };
+    } catch (e) {
+        console.error('loadStreak error:', e);
+        return { current: 0, best: 0, lastDate: null };
+    }
 }
+
+function saveHistory(h) {
+    _historyCache = h;
+    return Promise.resolve(true);
+}
+function saveStreak(s) { return Promise.resolve(true); }
+function archiveDay(key, data) { /* handled server-side */ }
+
+// Synchronous getters for inline handlers
+function getTodayCache() { return _todayCache; }
+function getHistoryCache() { return _historyCache; }
 
 /* ═══════════════════════════════════════════
    STREAK CALCULATION
@@ -675,15 +720,15 @@ function buildTimeSelect(tid, suffix, initVal, maxVal) {
     return `<select class="time-select" id="${id}" onchange="onTimeChange('${tid}','${suffix}',this.value)">${opts}</select>`;
 }
 
-function onTimeChange(tid, suffix, val) {
+async function onTimeChange(tid, suffix, val) {
     const h = suffix==='h' ? parseInt(val) : getHour(tid);
     const m = suffix==='m' ? parseInt(val) : getMin(tid);
-    updateTime(tid, h, m);
-    if (selectedDate === todayKey()) renderChart(selectedDate);
+    await updateTime(tid, h, m);
+    if (selectedDate === todayKey()) await renderChart(selectedDate);
 }
 
-function renderTasks() {
-    const data = loadToday();
+async function renderTasks() {
+    const data = await loadToday();
     const el = document.getElementById('leftPanel');
     let totalTasks = 0;
     let html = '';
@@ -751,50 +796,23 @@ function renderTasks() {
     updateStats(data);
 }
 
-function getHour(tid){ const d=loadToday()[tid]; return d?parseInt(d.time.split(':')[0]):0; }
-function getMin(tid){ const d=loadToday()[tid]; return d?parseInt(d.time.split(':')[1]):0; }
+function getHour(tid){ const d=getTodayCache()[tid]; return d?parseInt(d.time.split(':')[0]):0; }
+function getMin(tid){ const d=getTodayCache()[tid]; return d?parseInt(d.time.split(':')[1]):0; }
 
-function updateTime(tid, h, m) {
-    const data = loadToday();
+async function updateTime(tid, h, m) {
+    const data = await loadToday();
     if(!data[tid]) data[tid]={completed:false,time:'0:00'};
     data[tid].time = `${Math.min(23,Math.max(0,h))}:${String(Math.min(59,Math.max(0,m))).padStart(2,'0')}`;
-    saveToday(data);
-
-    // Immediately sync today's data to history
-    const today = todayKey();
-    const history = loadHistory();
-    const todayEntry = history.find(h => h.date === today);
-    if(todayEntry) {
-        todayEntry.data = data;
-        todayEntry.updatedAt = new Date().toISOString();
-    } else {
-        history.unshift({date:today, data:data, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()});
-    }
-    while(history.length > 120) history.pop();
-    saveHistory(history);
-
+    await saveToday(data);
     const el = document.querySelector(`#task_${tid} .tv`);
     if(el) el.textContent = data[tid].time;
 }
 
-function toggleTask(tid, done) {
-    const data = loadToday();
+async function toggleTask(tid, done) {
+    const data = await loadToday();
     if(!data[tid]) data[tid]={completed:false,time:'0:00'};
     data[tid].completed = done;
-    saveToday(data);
-
-    // Immediately sync today's data to history
-    const today = todayKey();
-    const history = loadHistory();
-    const todayEntry = history.find(h => h.date === today);
-    if(todayEntry) {
-        todayEntry.data = data;
-        todayEntry.updatedAt = new Date().toISOString();
-    } else {
-        history.unshift({date:today, data:data, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString()});
-    }
-    while(history.length > 120) history.pop();
-    saveHistory(history);
+    await saveToday(data);
 
     const taskEl = document.getElementById('task_'+tid);
     if(taskEl) {
@@ -814,7 +832,7 @@ function toggleTask(tid, done) {
     updateStats(data);
     if (selectedDate === todayKey()) renderChart(selectedDate);
     renderHistMini();
-    updateStreak();
+    await updateStreak();
     renderStreak();
     if(done) showToast('✅ 任务已完成，继续保持！');
 }
@@ -953,18 +971,18 @@ function addTask(subId) { openModal('add', subId, -1); }
 function editTask(subId, taskIdx) { openModal('edit', subId, taskIdx); }
 
 /* Live-refresh chart + history after any data change */
-function refreshChartAndHistory() {
-    renderChart(selectedDate || todayKey());
+async function refreshChartAndHistory() {
+    await renderChart(selectedDate || todayKey());
     renderCal();
     renderHistMini();
-    renderTrend();
+    await renderTrend();
 }
 
 /* ═══════════════════════════════════════════
    STREAK DISPLAY
 ═══════════════════════════════════════════ */
-function renderStreak() {
-    const streak = loadStreak();
+async function renderStreak() {
+    const streak = await loadStreak();
     document.getElementById('streakNum').textContent = streak.current;
 }
 
@@ -980,12 +998,12 @@ function renderCountdown() {
 /* ═══════════════════════════════════════════
    CALENDAR
 ═══════════════════════════════════════════ */
-function initCal() {
+async function initCal() {
     const now = new Date();
     calYear = now.getFullYear();
     calMonth = now.getMonth();
     selectedDate = todayKey();
-    renderCal();
+    await renderCal();
 }
 
 function changeMonth(delta) {
@@ -1074,13 +1092,13 @@ function renderCal() {
     renderLegend();
 }
 
-function selectDate(ds) {
+async function selectDate(ds) {
     selectedDate = ds;
     renderCal();
-    renderChart(ds);
+    await renderChart(ds);
 }
 
-function toggleWeekView() {
+async function toggleWeekView() {
     weekViewMode = !weekViewMode;
     const btn = document.getElementById('weekBtn');
     if(weekViewMode){
@@ -1106,7 +1124,8 @@ function toggleWeekView() {
         calMonth = now.getMonth();
         selectedDate = todayKey();
     }
-    renderCal();
+    await renderCal();
+    if (!weekViewMode && selectedDate) await renderChart(selectedDate);
 }
 
 function renderLegend() {
@@ -1118,11 +1137,12 @@ function renderLegend() {
 /* ═══════════════════════════════════════════
    DONUT CHART
 ═══════════════════════════════════════════ */
-function renderChart(dateStr) {
-    const history = loadHistory();
-    let record = history.find(h=>h.date===dateStr);
+async function renderChart(dateStr) {
+    let record = null;
+    const history = await loadHistory();
+    record = history.find(h=>h.date===dateStr);
     if (dateStr === todayKey()) {
-        const live = loadToday();
+        const live = await loadToday();
         record = record ? { ...record, data: live } : { date: dateStr, data: live };
     }
     const label = document.getElementById('chartDateLabel');
@@ -1187,21 +1207,21 @@ function renderChart(dateStr) {
 /* ═══════════════════════════════════════════
    TREND CHART (SVG line chart)
 ═══════════════════════════════════════════ */
-function setTrendRange(n) {
+async function setTrendRange(n) {
     trendRange = n;
     document.getElementById('trend7Btn').classList.toggle('active', n===7);
     document.getElementById('trend30Btn').classList.toggle('active', n===30);
-    renderTrend();
+    await renderTrend();
 }
 
-function renderTrend() {
+async function renderTrend() {
     const svg = document.getElementById('trendSvg');
     const W = 320, H = 170;
     const padL = 36, padR = 12, padT = 10, padB = 42;
     const chartW = W - padL - padR;
     const chartH = H - padT - padB;
 
-    const history = loadHistory();
+    const history = await loadHistory();
     const today = todayKey();
     const days = [];
     for (let i = trendRange - 1; i >= 0; i--) {
@@ -1459,37 +1479,37 @@ function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 /* ═══════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════ */
-function renderAll() {
-    renderTasks();
+async function renderAll() {
+    await renderTasks();
     initCal();
-    renderChart(selectedDate);
+    await renderChart(selectedDate);
     renderHistMini();
     renderStreak();
     renderCountdown();
-    renderTrend();
+    await renderTrend();
     initReminder();
 }
 
 /* ═══════════════════════════════════════════
     AUTO ARCHIVE YESTERDAY'S DATA
 ═══════════════════════════════════════════ */
-function archiveYesterday() {
+async function archiveYesterday() {
     const today = todayKey();
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    const yesterdayKey = 'checkin_' + yesterday;
 
-    // Check if yesterday has any data
-    const raw = localStorage.getItem(yesterdayKey);
-    if (!raw) return; // No data for yesterday
-
-    const history = loadHistory();
-    const existingIdx = history.findIndex(h => h.date === yesterday);
-
-    if (existingIdx < 0) {
-        // Archive yesterday's data to history
-        const data = JSON.parse(raw);
+    // Check if yesterday has any data via API
+    try {
+        const res = await fetch(`${API_BASE}/api/history/${yesterday}`);
+        if (!res.ok) return; // No data for yesterday
+        const json = await res.json();
+        const data = json.data;
         const hasData = Object.values(data).some(d => d.completed || d.time !== '0:00');
-        if (hasData) {
+        if (!hasData) return;
+
+        const history = await loadHistory();
+        const existingIdx = history.findIndex(h => h.date === yesterday);
+
+        if (existingIdx < 0) {
             history.unshift({
                 date: yesterday,
                 data: data,
@@ -1497,9 +1517,12 @@ function archiveYesterday() {
                 updatedAt: new Date().toISOString()
             });
             while (history.length > 120) history.pop();
-            saveHistory(history);
+            await saveHistory(history);
         }
+    } catch (e) {
+        console.error('archiveYesterday error:', e);
     }
+}
 
     // Update today's entry in history
     const todayEntry = history.find(h => h.date === today);
@@ -1514,18 +1537,18 @@ function archiveYesterday() {
     saveHistory(history);
 }
 
-function init() {
+async function init() {
     const now = new Date();
     const wd = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
     document.getElementById('todayDisplay').textContent =
         `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日 ${wd[now.getDay()]}`;
 
     // Auto archive yesterday's data
-    archiveYesterday();
+    await archiveYesterday();
 
     // Streak
-    updateStreak();
-    renderAll();
+    await updateStreak();
+    await renderAll();
 
     // Request notification permission once
     if ('Notification' in window && Notification.permission === 'default') {
